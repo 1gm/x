@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/1gm/x/deathcounter-file/hotkeys"
+	"github.com/1gm/x/deathcounter/hotkeys"
 )
 
 var deathCounterFile = flag.String("input", "deathcounter.txt", "path to death counter file")
@@ -20,14 +20,15 @@ func main() {
 }
 
 func realMain() int {
-	incr, decr, err := deathCounter(*deathCounterFile)
+	fileDeathCounter, err := newFileDeathCounter(*deathCounterFile)
 	if check(err) {
 		return 1
 	}
-	if check(hotkeys.Register(hotkeys.ModCtrl, hotkeys.VK_NUMPAD0, incr)) {
+
+	if check(hotkeys.Register(hotkeys.ModCtrl, hotkeys.VK_NUMPAD0, fileDeathCounter.Increment)) {
 		return 1
 	}
-	if check(hotkeys.Register(hotkeys.ModCtrl, hotkeys.VK_NUMPAD1, decr)) {
+	if check(hotkeys.Register(hotkeys.ModCtrl, hotkeys.VK_NUMPAD1, fileDeathCounter.Decrement)) {
 		return 1
 	}
 	hotkeys.Poll()
