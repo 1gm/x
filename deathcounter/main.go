@@ -4,35 +4,52 @@ package main
 
 import (
 	"flag"
-	"log"
 	"os"
 	"strings"
 
 	"github.com/1gm/x/deathcounter/hotkeys"
+	"github.com/1gm/x/internal/log"
 )
 
-var deathCounterFile = flag.String("input", "deathcounter.txt", "path to death counter file")
-
 func main() {
+	var counterFile string
+	flag.StringVar(&counterFile, "file", "deathcounter.txt", "path to death counter file")
+	flag.StringVar(&counterFile, "f", "deathcounter.txt", "path to death counter file (short)")
 	flag.Parse()
-	exitCode := realMain()
+
+	exitCode := realMain(counterFile)
 	os.Exit(exitCode)
 }
 
-func realMain() int {
-	fileDeathCounter, err := newFileDeathCounter(*deathCounterFile)
+func realMain(counterFilename string) int {
+	l := log.New()
+	defer l.Sync()
+	l.Infof("using %s as counter file", counterFilename)
+
+	fileDeathCounter, err := newFileDeathCounter(counterFilename)
 	if check(err) {
 		return 1
 	}
 
+	hotkeys.SetErrorHandler(func(err error) {
+		l.Error(err)
+	})
+
 	if check(hotkeys.Register(hotkeys.ModCtrl, hotkeys.VK_NUMPAD0, fileDeathCounter.Increment)) {
 		return 1
 	}
+	l.Info("Registered (CTRL + Numpad 0) to fileDeathCounter.Increment")
 	if check(hotkeys.Register(hotkeys.ModCtrl, hotkeys.VK_NUMPAD1, fileDeathCounter.Decrement)) {
 		return 1
 	}
-	hotkeys.Poll()
+	l.Info("Registered (CTRL + Numpad 1) to fileDeathCounter.Decrement")
 
+	l.Info("Begin polling...")
+	if check(hotkeys.Poll()) {
+		return 1
+	}
+
+	l.Info("End polling...")
 	return 0
 }
 

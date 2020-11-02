@@ -14,17 +14,11 @@ func newFileDeathCounter(name string) (*fileDeathCounter, error) {
 	var err error
 
 	if fileExists(name) {
-		count, err = parseDeathCounterFromFile(name)
-		if err != nil {
+		if count, err = parseDeathCounterFromFile(name); err != nil {
 			return nil, err
 		}
-	} else {
-		if err := mkdirAll(filepath.Dir(name)); err != nil {
-			return nil, err
-		}
-		if err := touchFile(name); err != nil {
-			return nil, err
-		}
+	} else if err = createFile(name); err != nil {
+		return nil, err
 	}
 
 	return &fileDeathCounter{
@@ -79,7 +73,11 @@ func fileExists(name string) bool {
 	return true
 }
 
-func touchFile(name string) error {
+func createFile(name string) error {
+	if err := mkdirAll(filepath.Dir(name)); err != nil {
+		return err
+	}
+
 	file, err := os.OpenFile(name, os.O_RDONLY|os.O_CREATE, 0644)
 	if err != nil {
 		return err

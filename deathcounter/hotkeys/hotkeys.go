@@ -8,15 +8,18 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
 )
 
+var keyID int16 = 0
+
+// Register registers a global hotkey to be processed by the application, it is not safe for concurrent use.
 func Register(modifiers int, keyCode int, callback func() error) error {
+	keyID++
 	hotKey := &hotKey{
-		id:        int16(nextKeyID()),
+		id:        keyID,
 		callback:  callback,
 		modifiers: modifiers,
 		keyCode:   keyCode,
@@ -30,7 +33,9 @@ func Register(modifiers int, keyCode int, callback func() error) error {
 	return nil
 }
 
-func Poll() {
+// Poll reads the Windows message loop and invokes hotkeys registered with Register.
+// It must be run on the main thread.
+func Poll() error {
 	// https://docs.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-msg
 	type msg struct {
 		HWND   uintptr
@@ -59,16 +64,16 @@ func Poll() {
 		select {
 		case <-time.After(50 * time.Millisecond):
 		case <-c:
-			log.Println("INFO: Shutting down")
 			if err := user32.Release(); err != nil {
-				errorHandler(err)
+				return fmt.Errorf("hotkeys: failed to release user32.DLL handle: %v", err)
 			}
-			return
+			return nil
 		}
-
 	}
 }
 
+// SetErrorHandler sets the global error handler mechanism. It is invoked whenever a callback function used in the
+// Register method would return an error.
 func SetErrorHandler(fn func(error)) {
 	errorHandler = fn
 }
@@ -110,10 +115,4 @@ func (h hotKey) String() string {
 		buf.WriteString("Win+")
 	}
 	return fmt.Sprintf("HotKey[%s%c]", buf.String(), h.keyCode)
-}
-
-var keyID int32
-
-func nextKeyID() int32 {
-	return atomic.AddInt32(&keyID, 1)
 }
