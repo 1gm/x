@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,47 +12,57 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
-)
 
-var (
-	port = flag.Int("port", 8080, "listen addr")
-	to = flag.String("to", "data", "directory to save downloads to")
-	staticDir = flag.String("static-dir", "static", "directory to serve static assets from")
-	mkdir = flag.Bool("mkdir", false, "make directory for [to] if it does not exist (will be equivalent to 'mkdir -p')")
+	"github.com/1gm/x/internal/log"
+	"go.uber.org/zap"
 )
 
 func main() {
+	port := flag.Int("port", 8080, "listen addr")
+	to := flag.String("to", "data", "directory to save downloads to")
+	staticDir := flag.String("static-dir", "static", "directory to serve static assets from")
+	mkdir := flag.Bool("mkdir", false, "make directory for [to] if it does not exist (will be equivalent to 'mkdir -p')")
 	flag.Parse()
-	if fi, err := os.Stat(*to); err != nil {
-		if os.IsNotExist(err)  && *mkdir {
-			if err = os.MkdirAll(*to, 0666); err != nil {
-				log.Fatalf("failed to create directory: %v", err)
+
+	exitCode := realMain(*port, *staticDir, *to, *mkdir)
+	os.Exit(exitCode)
+}
+func realMain(port int, staticDir string, to string, mkdir bool) int {
+	log := log.New()
+	defer log.Sync()
+
+	if fi, err := os.Stat(to); err != nil {
+		if os.IsNotExist(err) && mkdir {
+			if err = os.MkdirAll(to, 0666); err != nil {
+				log.Errorf("failed to create directory: %v", err)
+				return 1
 			}
 		}
-		log.Fatalf("failed to stat (did you forget to use '-mkdir' ?): %v", err)
+		log.Errorf("failed to stat (did you forget to use '-mkdir' ?): %v", err)
+		return 1
 
 	} else if !fi.IsDir() {
-		log.Fatalf("%q must be a directory", *to)
+		log.Errorf("%q must be a directory", to)
+		return 1
 	}
-	log.Printf("saving files to %q\n", *to)
+	log.Infof("saving files to %q", to)
 
 	downloadCounter := NewCounter("download")
 	skipCounter := NewCounter("skip")
 	mux := http.NewServeMux()
-	mux.HandleFunc("/download", download(*to, &downloadCounter, &skipCounter))
-	mux.Handle("/static/", noCache(http.StripPrefix("/static/", http.FileServer(http.Dir(*staticDir)))))
+	mux.HandleFunc("/download", download(log, to, &downloadCounter, &skipCounter))
+	mux.Handle("/static/", noCache(http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir)))))
 
 	closeCh := make(chan bool)
 	go func() {
-		log.Println("listening on ", *port)
-		if err := http.ListenAndServe(fmt.Sprintf(":%d", *port), cors(mux)); err != nil {
+		log.Info("listening on ", port)
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", port), cors(mux)); err != nil {
 			if !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("[ERROR] %v", err)
+				log.Error(err)
 			}
 		}
 		closeCh <- true
 	}()
-
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -61,23 +70,24 @@ func main() {
 	// Wait for termination signal
 	select {
 	case <-sigChan:
-		log.Println("received shutdown request")
+		log.Info("received shutdown request")
 		close(closeCh)
 	case <-closeCh:
-		log.Println("exiting")
+		log.Info("exiting")
 	}
 
-	log.Printf("%s\n%s\n", &downloadCounter, &skipCounter)
+	log.Info(&downloadCounter, &skipCounter)
+	return 0
 }
 
-func download(to string, downloadCounter *Counter, skippedCounter *Counter) http.HandlerFunc {
+func download(log *zap.SugaredLogger, to string, downloadCounter *Counter, skippedCounter *Counter) http.HandlerFunc {
 	logResult := func(downloaded uint64, skipped uint64) {
-		log.Printf("download: total=%d, complete=%d, skipped=%d\n", downloaded+skipped, downloaded, skipped)
+		log.Infof("download: total=%d complete=%d skipped=%d", downloaded+skipped, downloaded, skipped)
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		from := r.FormValue("from")
-		if from == "undefined" {
+		if from == "undefined" || from == "" {
 			http.Error(w, "from is 'undefined'", http.StatusBadRequest)
 			return
 		}
@@ -85,7 +95,7 @@ func download(to string, downloadCounter *Counter, skippedCounter *Counter) http
 		outPath := filepath.Join(to, fileName)
 		if fileExists(outPath) {
 			defer logResult(downloadCounter.Value(), skippedCounter.Increment())
-			log.Printf("%q already exists\n", outPath)
+			log.Infof("%q already exists", outPath)
 			w.WriteHeader(http.StatusNoContent)
 			w.Write([]byte("OK"))
 			return
@@ -94,9 +104,9 @@ func download(to string, downloadCounter *Counter, skippedCounter *Counter) http
 		defer func() {
 			c := downloadCounter.Increment()
 			s := skippedCounter.Value()
-			log.Printf("download: total=%d, complete=%d, skipped=%d\n", c+s, c, s)
+			log.Infof("download: total=%d complete=%d skipped=%d", c+s, c, s)
 		}()
-		log.Printf("downloading %q from %q\n", fileName, from)
+		log.Infof("downloading %q from %q", fileName, from)
 
 		resp, err := http.Get(from)
 		if err != nil {
@@ -124,7 +134,6 @@ func download(to string, downloadCounter *Counter, skippedCounter *Counter) http
 		w.Write([]byte("OK"))
 	}
 }
-
 
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
