@@ -1,10 +1,12 @@
 package log
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -32,7 +34,7 @@ func New(options ...Option) *zap.SugaredLogger {
 	// apply default output paths && error output if they aren't specified or if they were
 	// invalid, e.g. nil.
 	if cfg.OutputPaths == nil {
-		WithOutputPaths("stdout")(cfg)
+		WithOutputPaths("stderr")(cfg)
 	}
 
 	if cfg.ErrorOutputPaths == nil {
@@ -269,3 +271,15 @@ var (
 	// N represents a nil logger
 	N = nilS()
 )
+
+const consoleSeparator = " | "
+
+// ConsoleTimeEncoder serializes a time.Time to a floating-point number of seconds
+// since the Unix epoch.
+func consoleTimeEncoder(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+	var buf bytes.Buffer
+	buf.WriteString(t.Format("2006-01-02"))
+	buf.WriteString(consoleSeparator)
+	buf.WriteString(t.Format("15:04:05.000"))
+	enc.AppendString(buf.String())
+}
