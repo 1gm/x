@@ -10,3 +10,6 @@
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
+
+kraken-ticker/data/*.json
+kraken-ticker/data/*.gz
