@@ -11,16 +11,25 @@ import (
 	"time"
 
 	"github.com/1gm/x/internal/log"
+	"github.com/aws/aws-sdk-go/aws/session"
+	awspolly "github.com/aws/aws-sdk-go/service/polly"
+	"github.com/aws/aws-sdk-go/service/polly/pollyiface"
+	"go.uber.org/zap"
 )
 
 func main() {
 	in := flag.String("i", "input", "directory to read input files from")
 	flag.Parse()
 
-	os.Exit(realMain(*in))
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+	polly := awspolly.New(sess)
+
+	os.Exit(realMain(*in, polly))
 }
 
-func realMain(inputDirectory string) int {
+func realMain(inputDirectory string, polly pollyiface.PollyAPI) int {
 	log := log.New()
 	defer log.Sync()
 
@@ -38,20 +47,24 @@ func realMain(inputDirectory string) int {
 	signal.Notify(c, os.Interrupt, os.Kill)
 	go func() { <-c; cancel() }()
 
-	watchFiles := make(chan fileInfo)
-	watchErr := watchDirectory(ctx, inputDirectory, watchFiles)
+	// we pipe the results from the watchDirectory worker (watchFiles) into the text processor.
+	watchFiles, watchErr := watchDirectory(ctx, inputDirectory)
+	pollyResults, pollyErr := processText(ctx, log, polly, watchFiles)
+
 	for {
 		select {
-		case inputFile, ok := <-watchFiles:
-			if !ok {
-				continue
+		case result, ok := <-pollyResults:
+			if ok {
+				log.Infof("processed %v", result.name)
 			}
-			log.Info(inputFile)
 		case werr, ok := <-watchErr:
-			if !ok {
-				continue
+			if ok {
+				log.Error(werr)
 			}
-			log.Error(werr)
+		case perr, ok := <-pollyErr:
+			if ok {
+				log.Error(perr)
+			}
 		case <-ctx.Done():
 			log.Info("shutting down")
 			return 0
@@ -78,10 +91,13 @@ func createDirectories(inputDirectory string) (created bool, err error) {
 
 // watchDirectory writes results to resultCh which are read from inputDirectory, errors are returned through a channel
 // but are not necessarily indicative of a fatal error (haven't really figured these out yet).
-func watchDirectory(ctx context.Context, inputDirectory string, resultCh chan<- fileInfo) <-chan error {
+func watchDirectory(ctx context.Context, inputDirectory string) (<-chan fileInfo, <-chan error) {
 	errCh := make(chan error)
+	resultCh := make(chan fileInfo)
+
 	go func() {
 		defer close(errCh)
+		defer close(resultCh)
 
 		dirFS := os.DirFS(inputDirectory)
 		var latestModTime int64
@@ -107,7 +123,7 @@ func watchDirectory(ctx context.Context, inputDirectory string, resultCh chan<- 
 			}
 		}
 	}()
-	return errCh
+	return resultCh, errCh
 }
 
 // fileInfo captures some information about files (not sure if all of it is relevant).
@@ -123,7 +139,8 @@ func (fi fileInfo) String() string {
 	return fmt.Sprintf(`path: %s name: %s ext: %s mod: %d`, fi.path, fi.name, fi.ext, fi.mod)
 }
 
-// getFileInfosSince gets all the file infos in dirFS with mod times later than sinceModTime.
+// getFileInfosSince gets all the file infos in dirFS with mod times later than sinceModTime while skipping files in the
+// _processed directory.
 func getFileInfosSince(dirFS fs.FS, sinceModTime int64) ([]fileInfo, error) {
 	var fis []fileInfo
 	err := fs.WalkDir(dirFS, ".", func(path string, d fs.DirEntry, err error) error {
@@ -135,7 +152,11 @@ func getFileInfosSince(dirFS fs.FS, sinceModTime int64) ([]fileInfo, error) {
 			return err
 		}
 
-		modTime := fi.ModTime().UnixNano()
+		if d.Name() == "_processed" {
+			return fs.SkipDir
+		}
+
+		modTime := fi.ModTime().Unix()
 		if modTime <= sinceModTime {
 			return nil
 		}
@@ -155,4 +176,34 @@ func getFileInfosSince(dirFS fs.FS, sinceModTime int64) ([]fileInfo, error) {
 		return nil, err
 	}
 	return fis, nil
+}
+
+func processText(ctx context.Context, log *zap.SugaredLogger, polly pollyiface.PollyAPI, inputFiles <-chan fileInfo) (<-chan fileInfo, <-chan error) {
+	errCh := make(chan error)
+	resultCh := make(chan fileInfo)
+	go func() {
+		defer close(errCh)
+		defer close(resultCh)
+
+		for {
+			select {
+			case inputFile, ok := <-inputFiles:
+				if !ok {
+					return
+				}
+				log.Infof("polly processor received: %s", inputFile.name)
+
+				// TODO(george): Invoke polly here - rough idea:
+				// 1. read the file contents
+				// 2. invoke polly
+				// 3. save the result from polly into the '_processed' with a name similar to input file name (diff ext)
+				// 4. move the inputFile.name into the '_processed" directory.
+				// 5. return the result to realMain
+				resultCh <- inputFile
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return resultCh, errCh
 }
