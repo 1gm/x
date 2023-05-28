@@ -2,15 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/1gm/x/internal/log"
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	awspolly "github.com/aws/aws-sdk-go/service/polly"
 	"github.com/aws/aws-sdk-go/service/polly/pollyiface"
@@ -51,25 +55,43 @@ func realMain(inputDirectory string, polly pollyiface.PollyAPI) int {
 	watchFiles, watchErr := watchDirectory(ctx, inputDirectory)
 	pollyResults, pollyErr := processText(ctx, log, polly, watchFiles)
 
+	var err error
+	var exitCode int
+L:
 	for {
+		if err != nil {
+			break L
+		}
+
 		select {
 		case result, ok := <-pollyResults:
-			if ok {
-				log.Infof("processed %v", result.name)
+			if !ok {
+				continue
 			}
+			log.Infof("processed %v", result.name)
 		case werr, ok := <-watchErr:
-			if ok {
-				log.Error(werr)
+			if !ok {
+				continue
 			}
+			err = werr
+			exitCode = 1
 		case perr, ok := <-pollyErr:
-			if ok {
-				log.Error(perr)
+			if !ok {
+				continue
 			}
+			err = perr
+			exitCode = 1
 		case <-ctx.Done():
-			log.Info("shutting down")
-			return 0
+			err = ctx.Err()
 		}
 	}
+
+	if !errors.Is(err, context.Canceled) {
+		log.Error(err)
+	}
+
+	log.Info("shutting down")
+	return exitCode
 }
 
 // createDirectories will make the inputDirectory and it's subdirectory, _processed.
@@ -99,14 +121,13 @@ func watchDirectory(ctx context.Context, inputDirectory string) (<-chan fileInfo
 		defer close(errCh)
 		defer close(resultCh)
 
-		dirFS := os.DirFS(inputDirectory)
 		var latestModTime int64
 
 		for {
-			results, err := getFileInfosSince(dirFS, latestModTime)
+			results, err := getFileInfosSince(inputDirectory, latestModTime)
 			if err != nil {
 				errCh <- err
-				continue
+				return
 			}
 
 			for _, result := range results {
@@ -128,21 +149,23 @@ func watchDirectory(ctx context.Context, inputDirectory string) (<-chan fileInfo
 
 // fileInfo captures some information about files (not sure if all of it is relevant).
 type fileInfo struct {
-	path string
-	name string
-	ext  string
-	mod  int64
-	fi   fs.FileInfo
+	absolutePath string
+	path         string
+	name         string
+	ext          string
+	mod          int64
+	fi           fs.FileInfo
 }
 
 func (fi fileInfo) String() string {
-	return fmt.Sprintf(`path: %s name: %s ext: %s mod: %d`, fi.path, fi.name, fi.ext, fi.mod)
+	return fmt.Sprintf(`absolutePath: %s path: %s name: %s ext: %s mod: %d`, fi.absolutePath, fi.path, fi.name, fi.ext, fi.mod)
 }
 
-// getFileInfosSince gets all the file infos in dirFS with mod times later than sinceModTime while skipping files in the
-// _processed directory.
-func getFileInfosSince(dirFS fs.FS, sinceModTime int64) ([]fileInfo, error) {
+// getFileInfosSince gets all the file infos in inputDirectory with mod times later than sinceModTime while skipping
+// files in the _processed directory.
+func getFileInfosSince(inputDirectory string, sinceModTime int64) ([]fileInfo, error) {
 	var fis []fileInfo
+	dirFS := os.DirFS(inputDirectory)
 	err := fs.WalkDir(dirFS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -162,12 +185,19 @@ func getFileInfosSince(dirFS fs.FS, sinceModTime int64) ([]fileInfo, error) {
 		}
 
 		if !d.IsDir() {
+			realPath := filepath.Join(inputDirectory, path)
+			absolutePath, err := filepath.Abs(realPath)
+			if err != nil {
+				return err
+			}
+
 			fis = append(fis, fileInfo{
-				path: path,
-				name: fi.Name(),
-				ext:  filepath.Ext(fi.Name()),
-				mod:  modTime,
-				fi:   fi,
+				absolutePath: absolutePath,
+				path:         realPath,
+				name:         fi.Name(),
+				ext:          filepath.Ext(fi.Name()),
+				mod:          modTime,
+				fi:           fi,
 			})
 		}
 		return nil
@@ -191,14 +221,51 @@ func processText(ctx context.Context, log *zap.SugaredLogger, polly pollyiface.P
 				if !ok {
 					return
 				}
-				log.Infof("polly processor received: %s", inputFile.name)
+				log.Infof("polly processor received: %s", inputFile)
 
 				// TODO(george): Invoke polly here - rough idea:
 				// 1. read the file contents
+				inputBytes, err := os.ReadFile(inputFile.absolutePath)
+				if err != nil {
+
+					errCh <- fmt.Errorf("processText read input file: %v", err)
+					return
+				}
+				inputText := string(inputBytes)
+
 				// 2. invoke polly
-				// 3. save the result from polly into the '_processed' with a name similar to input file name (diff ext)
-				// 4. move the inputFile.name into the '_processed" directory.
-				// 5. return the result to realMain
+				pollyInput := &awspolly.SynthesizeSpeechInput{
+					OutputFormat: aws.String("mp3"),
+					Text:         &inputText,
+					VoiceId:      aws.String("Joanna"),
+				}
+
+				pollyOutput, err := polly.SynthesizeSpeech(pollyInput)
+				if err != nil {
+					errCh <- fmt.Errorf("processText synthesize text: %v", err)
+					return
+				}
+
+				// 3. save the result from polly into a file in the '_processed' with a .mp3 suffix
+				outputFilePath := strings.TrimSuffix(inputFile.absolutePath, inputFile.name)
+				outputFilePath = filepath.Join(outputFilePath, "_processed", inputFile.name+".mp3")
+				outputFile, err := os.Create(outputFilePath)
+				if err != nil {
+					errCh <- fmt.Errorf("processText failed to create output file: %v", err)
+					return
+				}
+
+				_, err = io.Copy(outputFile, pollyOutput.AudioStream)
+				if err != nil {
+					errCh <- fmt.Errorf("processText copy audio stream to output file: %v", err)
+					return
+				}
+
+				if err = outputFile.Close(); err != nil {
+					errCh <- fmt.Errorf("processText failed to close output file: %v", err)
+					return
+				}
+
 				resultCh <- inputFile
 			case <-ctx.Done():
 				return
