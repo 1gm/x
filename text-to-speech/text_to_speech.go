@@ -37,11 +37,20 @@ func realMain(inputDirectory string) int {
 	signal.Notify(c, os.Interrupt, os.Kill)
 	go func() { <-c; cancel() }()
 
+	watchFiles := make(chan string)
+	watchErr := watchDirectory(ctx, inputDirectory, watchFiles)
 	for {
-		log.Info("waiting for input files...")
-		// process the input files.
 		select {
-		case <-time.After(time.Second):
+		case inputFile, ok := <-watchFiles:
+			if !ok {
+				continue
+			}
+			log.Infof("received %v", inputFile)
+		case werr, ok := <-watchErr:
+			if !ok {
+				continue
+			}
+			log.Error(werr)
 		case <-ctx.Done():
 			log.Info("shutting down")
 			return 0
@@ -64,4 +73,21 @@ func createDirectories(inputDirectory string) (created bool, err error) {
 		return false, fmt.Errorf("%q must be a directory", inputDirectory)
 	}
 	return false, nil
+}
+
+func watchDirectory(ctx context.Context, inputDirectory string, resultCh chan<- string) <-chan error {
+	errCh := make(chan error)
+	go func() {
+		defer close(errCh)
+		for {
+			// TODO(george): Watch for new files passed into input directory
+			resultCh <- time.Now().Format(time.RFC3339)
+			select {
+			case <-time.After(5 * time.Second):
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return errCh
 }
