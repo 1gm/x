@@ -7,3 +7,7 @@ Will need to have AWS credentials on the machine, default setup is to just use t
 
 See [configuring the Go SDK](https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/configuring-sdk.html) for how to
 customize the configuration.
+
+## mac requirements
+
+Run `xcode-select --install` to get `xcrun` which is required by the audio player library.

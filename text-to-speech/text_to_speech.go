@@ -18,6 +18,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	awspolly "github.com/aws/aws-sdk-go/service/polly"
 	"github.com/aws/aws-sdk-go/service/polly/pollyiface"
+	"github.com/faiface/beep"
+	"github.com/faiface/beep/mp3"
+	"github.com/faiface/beep/speaker"
 	"go.uber.org/zap"
 )
 
@@ -68,7 +71,7 @@ L:
 			if !ok {
 				continue
 			}
-			log.Infof("processed %v", result.name)
+			log.Infof("created audio file at %v", result)
 		case werr, ok := <-watchErr:
 			if !ok {
 				continue
@@ -208,9 +211,11 @@ func getFileInfosSince(inputDirectory string, sinceModTime int64) ([]fileInfo, e
 	return fis, nil
 }
 
-func processText(ctx context.Context, log *zap.SugaredLogger, polly pollyiface.PollyAPI, inputFiles <-chan fileInfo) (<-chan fileInfo, <-chan error) {
+// processText invokes AWS Polly and stores the output file in the inputDirectory + "_processed" directory. The result
+// channel will return the name of the output files for playing.
+func processText(ctx context.Context, log *zap.SugaredLogger, polly pollyiface.PollyAPI, inputFiles <-chan fileInfo) (<-chan string, <-chan error) {
 	errCh := make(chan error)
-	resultCh := make(chan fileInfo)
+	resultCh := make(chan string)
 	go func() {
 		defer close(errCh)
 		defer close(resultCh)
@@ -223,7 +228,6 @@ func processText(ctx context.Context, log *zap.SugaredLogger, polly pollyiface.P
 				}
 				log.Infof("polly processor received: %s", inputFile)
 
-				// TODO(george): Invoke polly here - rough idea:
 				// 1. read the file contents
 				inputBytes, err := os.ReadFile(inputFile.absolutePath)
 				if err != nil {
@@ -266,11 +270,65 @@ func processText(ctx context.Context, log *zap.SugaredLogger, polly pollyiface.P
 					return
 				}
 
-				resultCh <- inputFile
+				resultCh <- outputFilePath
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 	return resultCh, errCh
+}
+
+func soundPlayer(ctx context.Context, log *zap.SugaredLogger, inputFiles <-chan string) <-chan error {
+	errCh := make(chan error)
+	go func() {
+		defer close(errCh)
+		for {
+			select {
+			case inputFile, ok := <-inputFiles:
+				if !ok {
+					return
+				}
+
+				if err := decodeAndPlayFile(log, inputFile); err != nil {
+					errCh <- fmt.Errorf("soundPlayer: %v", err)
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return errCh
+}
+
+// decodeAndPlayFile decodes the input file and plays it
+func decodeAndPlayFile(log *zap.SugaredLogger, inputFile string) error {
+	f, err := os.Open(inputFile)
+	if err != nil {
+		return fmt.Errorf("decodeAndPlayFile open file: %v", err)
+	}
+	defer f.Close()
+
+	streamer, format, err := mp3.Decode(f)
+	if err != nil {
+		return fmt.Errorf("decodeAndPlayFile mp3 decode: %v", err)
+	}
+	defer streamer.Close()
+
+	log.Infof("playing file at sample rate %v (N(time.Second) = %d)", format.SampleRate, format.SampleRate.N(time.Second/10))
+	err = speaker.Init(format.SampleRate, format.SampleRate.N(time.Second/10))
+	if err != nil {
+		return fmt.Errorf("decodeAndPlayFile speaker init: %v", err)
+	}
+
+	done := make(chan bool)
+	speaker.Play(beep.Seq(streamer, beep.Callback(func() {
+		done <- true
+	})))
+
+	<-done
+
+	speaker.Close()
+	return nil
 }
