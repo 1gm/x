@@ -57,7 +57,7 @@ func realMain(inputDirectory string, polly pollyiface.PollyAPI) int {
 	// we pipe the results from the watchDirectory worker (watchFiles) into the text processor.
 	watchFiles, watchErr := watchDirectory(ctx, inputDirectory)
 	pollyResults, pollyErr := processText(ctx, log, polly, watchFiles)
-
+	soundErr := soundPlayer(ctx, log, pollyResults)
 	var err error
 	var exitCode int
 L:
@@ -67,11 +67,6 @@ L:
 		}
 
 		select {
-		case result, ok := <-pollyResults:
-			if !ok {
-				continue
-			}
-			log.Infof("created audio file at %v", result)
 		case werr, ok := <-watchErr:
 			if !ok {
 				continue
@@ -83,6 +78,12 @@ L:
 				continue
 			}
 			err = perr
+			exitCode = 1
+		case serr, ok := <-soundErr:
+			if !ok {
+				continue
+			}
+			err = serr
 			exitCode = 1
 		case <-ctx.Done():
 			err = ctx.Err()
@@ -281,15 +282,23 @@ func processText(ctx context.Context, log *zap.SugaredLogger, polly pollyiface.P
 
 func soundPlayer(ctx context.Context, log *zap.SugaredLogger, inputFiles <-chan string) <-chan error {
 	errCh := make(chan error)
+
 	go func() {
 		defer close(errCh)
+		//err := speaker.Init(format.SampleRate, format.SampleRate.N(time.Second/10))
+		// These numbers were taken from a test run of a sample file.
+		if err := speaker.Init(22050, 2205); err != nil {
+			errCh <- fmt.Errorf("soundPlayer speaker init: %v", err)
+			return
+		}
+
 		for {
 			select {
 			case inputFile, ok := <-inputFiles:
 				if !ok {
 					return
 				}
-
+				log.Infof("soundPlayer received %v", inputFile)
 				if err := decodeAndPlayFile(log, inputFile); err != nil {
 					errCh <- fmt.Errorf("soundPlayer: %v", err)
 					return
@@ -316,19 +325,13 @@ func decodeAndPlayFile(log *zap.SugaredLogger, inputFile string) error {
 	}
 	defer streamer.Close()
 
-	log.Infof("playing file at sample rate %v (N(time.Second) = %d)", format.SampleRate, format.SampleRate.N(time.Second/10))
-	err = speaker.Init(format.SampleRate, format.SampleRate.N(time.Second/10))
-	if err != nil {
-		return fmt.Errorf("decodeAndPlayFile speaker init: %v", err)
-	}
+	log.Infof("playing file %v at sample rate %v (N(time.Second) = %d)", inputFile, format.SampleRate, format.SampleRate.N(time.Second/10))
 
 	done := make(chan bool)
 	speaker.Play(beep.Seq(streamer, beep.Callback(func() {
 		done <- true
 	})))
-
 	<-done
 
-	speaker.Close()
 	return nil
 }
