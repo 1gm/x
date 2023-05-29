@@ -142,7 +142,7 @@ func watchDirectory(ctx context.Context, inputDirectory string) (<-chan fileInfo
 			}
 
 			select {
-			case <-time.After(5 * time.Second):
+			case <-time.After(1 * time.Second):
 			case <-ctx.Done():
 				return
 			}
@@ -285,8 +285,9 @@ func soundPlayer(ctx context.Context, log *zap.SugaredLogger, inputFiles <-chan 
 
 	go func() {
 		defer close(errCh)
-		//err := speaker.Init(format.SampleRate, format.SampleRate.N(time.Second/10))
-		// These numbers were taken from a test run of a sample file.
+		// These numbers were taken from a test run of a sample file - these are the defaults used with an MP3 encoded
+		// by AWS Polly. On a per file basis we would want to decode the file into a stream and then do something like
+		// speaker.Init(format.SampleRate, format.SampleRate.N(time.Second/10))
 		if err := speaker.Init(22050, 2205); err != nil {
 			errCh <- fmt.Errorf("soundPlayer speaker init: %v", err)
 			return
@@ -303,6 +304,8 @@ func soundPlayer(ctx context.Context, log *zap.SugaredLogger, inputFiles <-chan 
 					errCh <- fmt.Errorf("soundPlayer: %v", err)
 					return
 				}
+				// give a slight artificial delay between files.
+				<-time.After(1 * time.Second)
 			case <-ctx.Done():
 				return
 			}
