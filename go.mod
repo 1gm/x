@@ -6,12 +6,14 @@ require (
 	github.com/aws/aws-sdk-go v1.44.271
 	github.com/faiface/beep v1.1.0
 	go.uber.org/zap v1.16.0
+	nhooyr.io/websocket v1.8.7
 )
 
 require (
 	github.com/hajimehoshi/go-mp3 v0.3.0 // indirect
 	github.com/hajimehoshi/oto v0.7.1 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	github.com/klauspost/compress v1.10.3 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	go.uber.org/atomic v1.6.0 // indirect
 	go.uber.org/multierr v1.5.0 // indirect
