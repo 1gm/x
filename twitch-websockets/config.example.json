@@ -1,0 +1,7 @@
+{
+    "accessToken": "access_token",
+    "channelId": "channel_id",
+    "clientSecret": "client_secret",
+    "clientId": "client_id",
+    "callbackUrl": "return_url"
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 
@@ -11,25 +12,52 @@ import (
 )
 
 func main() {
-	accessToken := flag.String("a", "", "twitch access token")
-	channelID := flag.String("c", "", "twitch channel ID")
+	configFilePath := flag.String("c", "config.json", "config file path")
 	flag.Parse()
 
-	os.Exit(realMain(*accessToken, *channelID))
+	os.Exit(realMain(*configFilePath))
 }
 
-func realMain(accessToken string, channelID string) int {
+func realMain(configFilePath string) int {
 	log := log.New()
 	defer log.Sync()
 
-	if accessToken == "" {
-		log.Error("access token is required (specified with -a flag)")
+	config, err := LoadConfig(configFilePath)
+	if err != nil {
+		log.Error(err)
+		return 1
+	} else if err = config.Validate(); err != nil {
+		log.Error(err)
 		return 1
 	}
 
-	if channelID == "" {
-		log.Error("channel ID is required (specified with -c flag)")
-		return 1
+	accessToken := config.AccessToken
+	// if access token is not specified in the config then we need to fetch it from Twitch.
+	if accessToken == "" {
+		// TODO(george): Implement this.
+		accessTokenCh := make(chan string)
+		oauthHandler := &OAuthHandler{
+			log:           log,
+			accessTokenCh: accessTokenCh,
+			ClientID:      config.ClientID,
+			ClientSecret:  config.ClientSecret,
+			CallbackURL:   config.CallbackURL,
+		}
+		server := http.Server{Handler: oauthHandler, Addr: ":8080"}
+		go func() {
+			if err := server.ListenAndServe(); err != nil {
+				if !errors.Is(err, http.ErrServerClosed) {
+					log.Errorf("server closed unexpectedly: %v", err)
+				}
+			}
+		}()
+
+		// block until we receive the access token
+		accessToken = <-accessTokenCh
+		if err := server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Errorf("server failed to close: %v", err)
+			return 1
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -37,7 +65,7 @@ func realMain(accessToken string, channelID string) int {
 	signal.Notify(c, os.Interrupt, os.Kill)
 	go func() { <-c; cancel() }()
 
-	closeConn, err := openWebsocketConnection(ctx, log, accessToken, channelID)
+	closeConn, err := openWebsocketConnection(ctx, log, accessToken, config.ChannelID)
 	if err != nil {
 		log.Error(err)
 		return 1
