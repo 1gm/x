@@ -31,11 +31,10 @@ func realMain(configFilePath string) int {
 		return 1
 	}
 
-	accessToken := config.AccessToken
+	accessTokenCh := make(chan string)
 	// if access token is not specified in the config then we need to fetch it from Twitch.
-	if accessToken == "" {
-		// TODO(george): Implement this.
-		accessTokenCh := make(chan string)
+	var server *http.Server
+	if config.AccessToken == "" {
 		oauthHandler := &OAuthHandler{
 			log:           log,
 			accessTokenCh: accessTokenCh,
@@ -43,21 +42,18 @@ func realMain(configFilePath string) int {
 			ClientSecret:  config.ClientSecret,
 			CallbackURL:   config.CallbackURL,
 		}
-		server := http.Server{Handler: oauthHandler, Addr: ":8080"}
+		server = &http.Server{Handler: oauthHandler, Addr: ":8080"}
 		go func() {
+			log.Info("go to http://localhost:8080 to get an access token")
 			if err := server.ListenAndServe(); err != nil {
 				if !errors.Is(err, http.ErrServerClosed) {
 					log.Errorf("server closed unexpectedly: %v", err)
 				}
 			}
 		}()
-
-		// block until we receive the access token
-		accessToken = <-accessTokenCh
-		if err := server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Errorf("server failed to close: %v", err)
-			return 1
-		}
+	} else {
+		// send the access token immediately
+		accessTokenCh <- config.AccessToken
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -65,21 +61,45 @@ func realMain(configFilePath string) int {
 	signal.Notify(c, os.Interrupt, os.Kill)
 	go func() { <-c; cancel() }()
 
-	closeConn, err := openWebsocketConnection(ctx, log, accessToken, config.ChannelID)
-	if err != nil {
-		log.Error(err)
-		return 1
-	}
-	defer closeConn()
-
+	var exitCode int
+	var closeConn = func() {}
+LOOP:
 	for {
 		select {
+		// if we are receiving the access token from twitch then we will be blocking here
+		case accessToken, ok := <-accessTokenCh:
+			log.Info("received access token")
+			if ok {
+				if server != nil {
+					if err = server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+						log.Errorf("server failed to close: %v", err)
+						exitCode = 1
+						break LOOP
+					}
+				}
+
+				// use a background context to allow us to issue UNLISTEN commands to the twitch API
+				if closeConn, err = openWebsocketConnection(context.Background(), log, accessToken, config.ChannelID); err != nil {
+					err = err
+					exitCode = 1
+					break LOOP
+				}
+			}
 		case <-ctx.Done():
 			if err = ctx.Err(); !errors.Is(err, context.Canceled) {
-				log.Error(err)
-				return 1
+				exitCode = 1
+				break LOOP
+			} else {
+				err = nil
 			}
-			return 0
+			exitCode = 0
+			break LOOP
 		}
 	}
+
+	closeConn()
+	if err != nil {
+		log.Error(err)
+	}
+	return exitCode
 }

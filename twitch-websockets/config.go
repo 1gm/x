@@ -7,7 +7,7 @@ import (
 )
 
 func LoadConfig(filename string) (Config, error) {
-	config := Config{}
+	var config Config
 	if filename == "" {
 		return config, errors.New("must specify a config file path")
 	} else if b, err := os.ReadFile(filename); err != nil {

@@ -51,7 +51,9 @@ func openWebsocketConnection(ctx context.Context, log *zap.SugaredLogger, access
 
 	return func() {
 		if err := c.Close(); err != nil {
-			c.log.Infof("twitch client close error" + err.Error())
+			if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+				c.log.Infof("twitch client close error " + err.Error())
+			}
 		}
 	}, nil
 }
@@ -73,11 +75,12 @@ func (c *wsconn) Close() error { return c.close(websocket.StatusNormalClosure, "
 
 func (c *wsconn) close(code websocket.StatusCode, reason string) error {
 	if c.stop != nil {
-		stopped := make(chan struct{})
-		c.stop <- stopped
+		writerStop := make(chan struct{})
+		// notify the writer we are stopping and issue the UNLISTEN command to Twitch
+		c.stop <- writerStop
 
 		// wait to hear back from writer on stopping
-		<-stopped
+		<-writerStop
 		c.stop = nil
 
 		return c.ws.Close(code, reason)
