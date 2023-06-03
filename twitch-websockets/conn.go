@@ -145,7 +145,9 @@ func (c *wsconn) write() {
 			c.ctx = c.ws.CloseRead(c.ctx)
 			if !c.badAuth {
 				if err := wsjson.Write(c.ctx, c.ws, c.authn("UNLISTEN")); err != nil {
-					c.log.Error("UNLISTEN: " + err.Error())
+					c.log.Error("failed to disconnect from twitch pubsub: ", err.Error())
+				} else {
+					c.log.Info("successfully disconnected from twitch pubsub")
 				}
 			}
 			stopped <- struct{}{}
