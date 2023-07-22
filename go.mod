@@ -5,6 +5,7 @@ go 1.20
 require (
 	github.com/aws/aws-sdk-go v1.44.271
 	github.com/faiface/beep v1.1.0
+	github.com/go-chi/chi v1.5.4
 	go.uber.org/zap v1.16.0
 	golang.org/x/oauth2 v0.8.0
 	nhooyr.io/websocket v1.8.7
