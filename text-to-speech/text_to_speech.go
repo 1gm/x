@@ -104,7 +104,7 @@ func createDirectories(inputDirectory string) (created bool, err error) {
 	inputDirectoryFull := filepath.Join(inputDirectory, "_processed")
 	if fi, err := os.Stat(inputDirectoryFull); err != nil {
 		if os.IsNotExist(err) {
-			if err = os.MkdirAll(inputDirectoryFull, 0777); err != nil {
+			if err = os.MkdirAll(inputDirectoryFull, os.ModePerm); err != nil {
 				return false, fmt.Errorf("failed to create directory: %v", err)
 			}
 			return true, nil
