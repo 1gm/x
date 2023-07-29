@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/1gm/x/internal/log"
 	"github.com/go-chi/chi"
+	"go.uber.org/zap"
+	"nhooyr.io/websocket"
 )
 
 func main() {
@@ -33,10 +36,9 @@ func realMain(audioDir string, httpAddr string) int {
 	go func() { <-c; cancel() }()
 
 	r := chi.NewRouter()
-	// server sent events
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("hello world"))
-	})
+
+	r.Get("/ws", handleWebSocket(ctx, log))
+	r.Get("/*", handleAsset(log))
 
 	closeCh := make(chan bool)
 	go func() {
@@ -61,4 +63,48 @@ func realMain(audioDir string, httpAddr string) int {
 	}
 
 	return exitCode
+}
+
+func handleWebSocket(bgContext context.Context, log *zap.SugaredLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			log.Errorf("event websocket accept failed %s", err)
+			return
+		}
+
+		log.Infof("websocket connection established")
+
+		defer func() {
+			if cerr := conn.Close(websocket.StatusInternalError, ""); cerr != nil {
+				log.Errorf("failed to close websocket connection: %v", cerr)
+			}
+		}()
+
+		// ignore incoming connections
+		r = r.WithContext(conn.CloseRead(r.Context()))
+
+		// write sends message with a timeout.
+		writeTimeout := func(ctx context.Context, timeout time.Duration, conn *websocket.Conn, msg []byte) error {
+			ctx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			return conn.Write(ctx, websocket.MessageText, msg)
+		}
+
+		// Stream all events to outgoing websocket writer.
+		for {
+			select {
+			case <-r.Context().Done():
+				return // disconnect when HTTP connection disconnects
+			case <-bgContext.Done():
+				return // disconnect when the application is shutting down
+			case <-time.After(time.Second * 5):
+				if werr := writeTimeout(r.Context(), time.Second*3, conn, []byte(fmt.Sprintf("the time is %s", time.Now()))); werr != nil {
+					log.Errorf("write timeout error: %v", werr)
+					return
+				}
+			}
+		}
+	}
 }
