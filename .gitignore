@@ -17,3 +17,6 @@ kraken-ticker/data/*.gz
 text-to-speech/input/*
 
 twitch-websockets/config.json
+
+node_modules
+html-speaker/dist

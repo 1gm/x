@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
 	"time"
 
+	htmlspeaker "github.com/1gm/x/html-speaker"
 	"github.com/1gm/x/internal/log"
 	"github.com/go-chi/chi"
 	"go.uber.org/zap"
@@ -35,9 +38,16 @@ func realMain(audioDir string, httpAddr string) int {
 	signal.Notify(c, os.Interrupt, os.Kill)
 	go func() { <-c; cancel() }()
 
+	// audio data that will be pumped over websocket
+	audioTestData, err := htmlspeaker.OpenTestDataMP3()
+	if err != nil {
+		log.Error(err)
+		return 1
+	}
+	encodedAudioData := base64.StdEncoding.EncodeToString(audioTestData)
 	r := chi.NewRouter()
 
-	r.Get("/ws", handleWebSocket(ctx, log))
+	r.Get("/ws", handleWebSocket(ctx, log, encodedAudioData))
 	r.Get("/*", handleAsset(log))
 
 	closeCh := make(chan bool)
@@ -65,7 +75,7 @@ func realMain(audioDir string, httpAddr string) int {
 	return exitCode
 }
 
-func handleWebSocket(bgContext context.Context, log *zap.SugaredLogger) http.HandlerFunc {
+func handleWebSocket(bgContext context.Context, log *zap.SugaredLogger, base64AudioData string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		conn, err := websocket.Accept(w, r, nil)
@@ -100,11 +110,34 @@ func handleWebSocket(bgContext context.Context, log *zap.SugaredLogger) http.Han
 			case <-bgContext.Done():
 				return // disconnect when the application is shutting down
 			case <-time.After(time.Second * 5):
-				if werr := writeTimeout(r.Context(), time.Second*3, conn, []byte(fmt.Sprintf("the time is %s", time.Now()))); werr != nil {
+				if werr := writeTimeout(r.Context(), time.Second*3, conn, []byte(base64AudioData)); werr != nil {
 					log.Errorf("write timeout error: %v", werr)
 					return
 				}
 			}
 		}
+	}
+}
+
+func handleAsset(log *zap.SugaredLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "Sat, 01 Jan 2000 00:00:00 GMT")
+
+		if r.URL.Path == "/" {
+			r.URL.Path = "index.html"
+		}
+
+		body, contentType, err := htmlspeaker.ReadAsset(r.URL.Path)
+		if err == nil {
+			w.Header().Set("Content-Type", contentType)
+			io.Copy(w, body)
+			return
+		}
+		log.Infof("read asset at %s: %v", r.URL.Path, err)
+
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("not found"))
 	}
 }
