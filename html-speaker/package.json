@@ -1,0 +1,15 @@
+{
+  "name": "html-speaker",
+  "version": "1.0.0",
+  "description": "",
+  "main": "esbuild.js",
+  "scripts": {
+    "ts-types": " tsc --declaration --outDir dist"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "esbuild": "^0.18.17",
+    "typescript": "^5.1.6"
+  }
+}
